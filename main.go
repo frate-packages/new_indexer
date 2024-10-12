@@ -9,43 +9,44 @@ import (
 
 // Feature struct representing each feature
 type Feature struct {
-	Description      string              `json:"description"`
-	RequiredFeatures []string            `json:"required_features,omitempty"`
-	Dependencies     []string            `json:"dependencies,omitempty"` // Change to []string
+	Description      string   `json:"description"`
+	RequiredFeatures []string `json:"required_features,omitempty"`
+	Dependencies     []string `json:"dependencies,omitempty"` // Change to []string
 }
 
 // Package struct representing the package structure
 type Package struct {
-	Name         string   `json:"name"`
-	Version      string   `json:"version"`
-	Description  string   `json:"description"`
-	GitURL       string   `json:"gitURL"`
-	License      string   `json:"license"`
-	Supports     string   `json:"supports,omitempty"`
-	Stars        int      `json:"stars"`
-	LastModified string   `json:"last_modified"`
-	Dependencies []string  `json:"dependencies"` // Change to []string
+	Name         string             `json:"name"`
+	Version      string             `json:"version"`
+	Versions     []string           `json:"versions"`
+	Description  string             `json:"description"`
+	GitURL       string             `json:"gitURL"`
+	License      string             `json:"license"`
+	Supports     string             `json:"supports,omitempty"`
+	Stars        int                `json:"stars"`
+	LastModified string             `json:"last_modified"`
+	Dependencies []string           `json:"dependencies"` // Change to []string
 	Features     map[string]Feature `json:"features,omitempty"`
 }
 
 // Root struct representing the entire JSON structure
 type Root struct {
-	Baseline string        `json:"Baseline"`
-	Size     int           `json:"Size"`
-	Source   []RawPackage  `json:"Source"`
+	Baseline string       `json:"Baseline"`
+	Size     int          `json:"Size"`
+	Source   []RawPackage `json:"Source"`
 }
 
 // RawPackage struct to handle mixed types in `Dependencies`, `Description`, and `Features`
 type RawPackage struct {
 	Name         string          `json:"Name"`
 	Version      string          `json:"Version"`
-	Description  json.RawMessage `json:"Description"`   // Can be a string or an array
+	Description  json.RawMessage `json:"Description"` // Can be a string or an array
 	GitURL       string          `json:"homepage"`
 	License      string          `json:"License"`
 	Supports     string          `json:"Supports,omitempty"`
 	Stars        int             `json:"Stars"`
 	LastModified string          `json:"LastModified"`
-	Dependencies json.RawMessage `json:"Dependencies"`  // Can be a list of strings or objects
+	Dependencies json.RawMessage `json:"Dependencies"` // Can be a list of strings or objects
 	Features     json.RawMessage `json:"Features,omitempty"`
 }
 
@@ -216,4 +217,3 @@ func main() {
 
 	fmt.Println("Transformed data written successfully!")
 }
-
