@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"regexp"
 	"strings"
 )
 
@@ -11,13 +13,14 @@ import (
 type Feature struct {
 	Description      string   `json:"description"`
 	RequiredFeatures []string `json:"required_features,omitempty"`
-	Dependencies     []string `json:"dependencies,omitempty"` // Change to []string
+	Dependencies     []string `json:"dependencies,omitempty"`
 }
 
 // Package struct representing the package structure
 type Package struct {
 	Name         string             `json:"name"`
 	Version      string             `json:"version"`
+	Tag          string             `json:"tag"`
 	Versions     []string           `json:"versions"`
 	Description  string             `json:"description"`
 	GitURL       string             `json:"gitURL"`
@@ -25,8 +28,9 @@ type Package struct {
 	Supports     string             `json:"supports,omitempty"`
 	Stars        int                `json:"stars"`
 	LastModified string             `json:"last_modified"`
-	Dependencies []string           `json:"dependencies"` // Change to []string
+	Dependencies []string           `json:"dependencies"`
 	Features     map[string]Feature `json:"features,omitempty"`
+	CMakeTarget  string             `json:"cmake_target,omitempty"`
 }
 
 // Root struct representing the entire JSON structure
@@ -40,19 +44,107 @@ type Root struct {
 type RawPackage struct {
 	Name         string          `json:"Name"`
 	Version      string          `json:"Version"`
-	Description  json.RawMessage `json:"Description"` // Can be a string or an array
+	Description  json.RawMessage `json:"Description"`
 	GitURL       string          `json:"homepage"`
 	License      string          `json:"License"`
 	Supports     string          `json:"Supports,omitempty"`
 	Stars        int             `json:"Stars"`
 	LastModified string          `json:"LastModified"`
-	Dependencies json.RawMessage `json:"Dependencies"` // Can be a list of strings or objects
+	Dependencies json.RawMessage `json:"Dependencies"`
 	Features     json.RawMessage `json:"Features,omitempty"`
+}
+
+var versionRegexes = []*regexp.Regexp{
+	regexp.MustCompile(`^v?\d+\.\d+\.\d+$`),             // v1.2.3 or 1.2.3
+	regexp.MustCompile(`^v?\d+\.\d+$`),                  // v1.2 or 1.2
+	regexp.MustCompile(`[A-Za-z]+-?\d+_\d+_\d+$`),       // word-1_2_3 or word1_2_3
+	regexp.MustCompile(`[A-Za-z]+-?\d+\.\d+\.\d+$`),     // word-1.2.3 or word1.2.3
+	regexp.MustCompile(`[A-Za-z]+_?\d+\.\d+\.\d+$`),     // word_1.2.3 or word1.2.3
+	regexp.MustCompile(`[A-Za-z]+_?\d+\.\d+$`),          // word_1.2 or word1.2
+	regexp.MustCompile(`^(master|latest|stable|main)$`), // Specific keywords
+}
+
+// Parse remote git tags
+func parseRemoteLsTags(output string) []string {
+	lines := strings.Split(output, "\n")
+	var tags []string
+
+	for _, line := range lines {
+		if strings.Contains(line, "refs/tags/") || strings.Contains(line, "refs/heads/") {
+			parts := strings.Split(line, "/")
+			tag := parts[len(parts)-1]
+
+			if validateVersionName(tag) {
+				tags = append(tags, tag)
+			}
+		}
+	}
+	return tags
+}
+
+// Validate if a version matches known version patterns
+func validateVersionName(version string) bool {
+	for _, regex := range versionRegexes {
+		if regex.MatchString(version) {
+			return true
+		}
+	}
+	return false
+}
+
+
+// Function to extract remote versions from git, returns empty version if GitURL is invalid or inaccessible
+func getRemoteVersions(packageInfo *Package) error {
+	if packageInfo.GitURL != "" {
+		cmd := exec.Command("git", "ls-remote", packageInfo.GitURL)
+
+		// Log the URL for debugging purposes
+		fmt.Printf("Fetching tags for repository: %s\n", packageInfo.GitURL)
+
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			// Log the error, but return an empty array instead of failing
+			fmt.Printf("Error running git ls-remote for %s: %s. Returning empty versions.\n", packageInfo.GitURL, string(out))
+			packageInfo.Versions = []string{} // Return empty versions
+			return nil // No error returned, continue processing
+		}
+
+		tags := parseRemoteLsTags(string(out))
+		if len(tags) > 0 {
+			// Set the latest tag as the version
+			packageInfo.Version = tags[len(tags)-1]
+			packageInfo.Versions = tags
+		} else {
+			// If no tags are found, return empty versions
+			fmt.Printf("No valid git tags found for %s. Returning empty versions.\n", packageInfo.GitURL)
+			packageInfo.Versions = []string{}
+		}
+		return nil
+	}
+	// No Git URL provided, return empty versions
+	fmt.Printf("No git URL provided for %s. Returning empty versions.\n", packageInfo.Name)
+	packageInfo.Versions = []string{}
+	return nil
+}
+
+
+// Function to map known dependency names to CMake target names
+func MapDependencyToCMakeTarget(depName string) string {
+	cmakeTargetMap := map[string]string{
+		"boost-asio": "Boost::asio",
+		"boost-system": "Boost::system",
+		"openssl": "OpenSSL::SSL",
+		// Add more mappings as needed...
+	}
+
+	if target, exists := cmakeTargetMap[depName]; exists {
+		return target
+	}
+	return depName // If no mapping exists, return the original name
 }
 
 // Transform method converts RawPackage to the refined Package structure
 func (rp *RawPackage) Transform() (Package, error) {
-	// Handle dependencies
 	var dependencyList []string
 
 	// Handle mixed dependencies (strings and objects)
@@ -64,40 +156,32 @@ func (rp *RawPackage) Transform() (Package, error) {
 	for _, dep := range mixedDeps {
 		switch depType := dep.(type) {
 		case string:
-			// Simple string dependency
-			if depType != "vcpkg-cmake" && depType != "vcpkg-msbuild" && depType != "vcpkg-cmake-config" {
-				dependencyList = append(dependencyList, depType)
-			}
+			dependencyList = append(dependencyList, depType)
 		case map[string]interface{}:
-			// Dependency with additional fields (e.g., platform, host)
 			depName := depType["name"].(string)
-			if depName == "vcpkg-cmake" || depName == "vcpkg-cmake-config" || depName == "vcpkg-msbuild" {
-				continue // Skip vcpkg-cmake dependencies
-			}
-
-			// Add the dependency name directly
 			dependencyList = append(dependencyList, depName)
 		default:
 			fmt.Printf("Unknown dependency type: %T\n", depType)
 		}
 	}
 
-	// Handle `Description` as string or array
+	// Handle description
 	var description string
 	if err := json.Unmarshal(rp.Description, &description); err != nil {
 		var descriptions []string
 		if err := json.Unmarshal(rp.Description, &descriptions); err == nil {
-			// Join the array into a single string
 			description = strings.Join(descriptions, ", ")
 		} else {
 			return Package{}, err
 		}
 	}
 
+	// Get CMake target
+	cmakeTarget := MapDependencyToCMakeTarget(rp.Name)
+
 	// Handle features
 	featuresMap := make(map[string]Feature)
 	if len(rp.Features) > 0 {
-		// Check if the features field is an array or a map
 		var featureData interface{}
 		if err := json.Unmarshal(rp.Features, &featureData); err != nil {
 			return Package{}, err
@@ -105,11 +189,9 @@ func (rp *RawPackage) Transform() (Package, error) {
 
 		switch featureType := featureData.(type) {
 		case map[string]interface{}:
-			// Normal feature map
 			for featName, feat := range featureType {
 				featMap := feat.(map[string]interface{})
 
-				// Handle description as string or array
 				var featureDescription string
 				switch desc := featMap["description"].(type) {
 				case string:
@@ -122,18 +204,15 @@ func (rp *RawPackage) Transform() (Package, error) {
 					featureDescription = strings.Join(descArray, ", ")
 				}
 
-				// Handle feature dependencies
 				var featureDeps []string
 				var requiredFeatures []string
 				if depList, ok := featMap["dependencies"].([]interface{}); ok {
 					for _, dep := range depList {
 						switch depVal := dep.(type) {
 						case string:
-							// Simple string dependency
 							featureDeps = append(featureDeps, depVal)
 						case map[string]interface{}:
 							depName := depVal["name"].(string)
-							// Check if the feature depends on itself (self-referential dependency)
 							if depName == rp.Name {
 								requiredFeatures = append(requiredFeatures, featName)
 							} else {
@@ -151,26 +230,30 @@ func (rp *RawPackage) Transform() (Package, error) {
 					Dependencies:     featureDeps,
 				}
 			}
-		case []interface{}:
-			// Features is an array, handle this case gracefully
-			fmt.Println("Features is an array; processing as needed.")
-		default:
-			fmt.Printf("Unknown feature type: %T\n", featureType)
 		}
 	}
 
-	return Package{
+	pkg := Package{
 		Name:         rp.Name,
-		Version:      rp.Version,
+		Version:      rp.Version, // This will be replaced by the tag we fetch
 		Description:  description,
 		GitURL:       rp.GitURL,
 		License:      rp.License,
 		Supports:     rp.Supports,
 		Stars:        rp.Stars,
 		LastModified: rp.LastModified,
-		Dependencies: dependencyList, // Change to use slice of strings
+		Dependencies: dependencyList,
 		Features:     featuresMap,
-	}, nil
+		CMakeTarget:  cmakeTarget,
+	}
+
+	// Fetch the latest git tag and update the Version
+	err := getRemoteVersions(&pkg)
+	if err != nil {
+		fmt.Printf("Error fetching remote versions for %s: %v\n", pkg.Name, err)
+	}
+
+	return pkg, nil
 }
 
 func main() {
@@ -189,11 +272,9 @@ func main() {
 		return
 	}
 
-	// Create a slice for transformed packages
 	var transformedPackages []Package
 
 	for _, rawPkg := range root.Source {
-		// Transform RawPackage into Package
 		transformedPkg, err := rawPkg.Transform()
 		if err != nil {
 			fmt.Printf("Error transforming package: %v\n", err)
@@ -217,3 +298,4 @@ func main() {
 
 	fmt.Println("Transformed data written successfully!")
 }
+
